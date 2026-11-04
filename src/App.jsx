@@ -178,6 +178,7 @@ export default function App() {
   const [scanProductId, setScanProductId] = useState('');
   const [scanProductNumber, setScanProductNumber] = useState('');
   const [scanFactoryInput, setScanFactoryInput] = useState('');
+  const [scanFactoryNumber, setScanFactoryNumber] = useState('');
   const [scanSerialInput, setScanSerialInput] = useState('');
   const [ocrText, setOcrText] = useState('');
   const [ocrStatus, setOcrStatus] = useState('');
@@ -312,7 +313,7 @@ export default function App() {
       setScanResult({
         verdict: 'REVIEW', score: 0, productName: '상품 식별 보류', productNumber: '확인 필요',
         registeredProductNumber: '없음', companyName: '확인 필요', factoryName: scanFactoryInput || 'OCR에서 확인되지 않음',
-        registeredFactory: '등록정보 없음', serialNumber: scanSerialInput || '확인 필요', image: scanPreview,
+        registeredFactory: '등록정보 없음', factoryNumber: scanFactoryNumber || '사진에서 추출되지 않음', serialNumber: scanSerialInput || '확인 필요', image: scanPreview,
         summary: '사진에서 읽은 글자만으로 진가네 예시 상품 목록과 일치하는 제품을 찾지 못했습니다. 상품 후보를 직접 선택하거나 제조사·모델명을 입력해 주세요.',
         checks: [{ name: '사진 문자 인식(OCR)', passed: Boolean(extractedText), note: extractedText ? '문자를 추출했지만 상품 식별은 되지 않음' : '읽을 수 있는 문자를 찾지 못함' }, { name: '상품 등록정보 대조', passed: false, note: '비교할 상품 후보가 선택되지 않음' }],
         extractedText, databaseStatus: '조회하지 않음', serialStatus: '확인하지 않음',
@@ -323,19 +324,38 @@ export default function App() {
 
     // Read simple visible labels if present. User-entered values take priority over OCR guesses.
     const productNoFromOcr = extractedText.match(/PROD[- ]?\d{3}/i)?.[0]?.toUpperCase().replace(' ', '-') || '';
-    const serialFromOcr = extractedText.match(/(?:S\/?N|SERIAL|시리얼|제조번호)\s*[:#-]?\s*([A-Z0-9-]{6,})/i)?.[1] || '';
-    const factoryFromOcr = extractedText.match(/(?:FACTORY|공장|제조공장)\s*[:：]?\s*([^\n\r]{2,60})/i)?.[1]?.trim() || '';
+    // Extract factory/plant identifiers separately from serial numbers.
+    const factoryNumberFromOcr = extractedText.match(/(?:FACTORY\s*(?:NO\.?|NUMBER|ID|CODE)?|PLANT\s*(?:NO\.?|NUMBER|ID|CODE)?|공장\s*(?:번호|코드|ID)|제조공장\s*(?:번호|코드))\s*[:：#-]?\s*([A-Z0-9][A-Z0-9._/-]{2,30})/i)?.[1] || '';
+    const serialFromOcr = extractedText.match(/(?:S\s*\/?\s*N|SERIAL(?:\s*(?:NO\.?|NUMBER))?|SER\.\s*NO\.?|일련번호|시리얼(?:번호)?|제조번호)\s*[:：#-]?\s*([A-Z0-9][A-Z0-9-]{4,30})/i)?.[1] || '';
+    const factoryFromOcr = extractedText.match(/(?:FACTORY|공장명|제조공장명)\s*[:：]?\s*([^\n\r]{2,60})/i)?.[1]?.trim() || '';
     const productNumber = scanProductNumber.trim() || productNoFromOcr;
     const factoryInput = scanFactoryInput.trim() || factoryFromOcr;
+    const factoryNumberInput = scanFactoryNumber.trim() || factoryNumberFromOcr;
     const serialInput = scanSerialInput.trim() || serialFromOcr;
     if (!scanProductNumber.trim() && productNoFromOcr) setScanProductNumber(productNoFromOcr);
     if (!scanFactoryInput.trim() && factoryFromOcr) setScanFactoryInput(factoryFromOcr);
+    if (!scanFactoryNumber.trim() && factoryNumberFromOcr) setScanFactoryNumber(factoryNumberFromOcr);
     if (!scanSerialInput.trim() && serialFromOcr) setScanSerialInput(serialFromOcr);
     if (!scanProductId && detectedProduct) setScanProductId(detectedProduct.id);
 
     const productNumberMatch = normalize(productNumber) === normalize(selectedRecord.id);
     const factoryMatch = normalize(factoryInput) === normalize(selectedRecord.factory);
     const serialProvided = serialInput.trim().length >= 6;
+
+    // Image-based preliminary screening: check photo quality and whether visible label text
+    // can be compared with the selected product. This is NOT an authenticity classifier.
+    const imageInfo = await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve({ width: img.naturalWidth || 0, height: img.naturalHeight || 0 });
+      img.onerror = () => resolve({ width: 0, height: 0 });
+      img.src = scanPreview;
+    });
+    const usableResolution = imageInfo.width >= 500 && imageInfo.height >= 500;
+    const readableLabel = extractedText.replace(/\s/g, '').length >= 8;
+    const visibleBrandText = [selectedRecord.company, selectedRecord.name]
+      .map((value) => normalize(value).slice(0, 12))
+      .filter((value) => value.length >= 4)
+      .some((value) => textNorm.includes(value));
 
     // Manufacturer verification is performed only when the owner configures a trusted server endpoint.
     // Never put private manufacturer API keys in VITE_* browser variables. The endpoint must proxy keys server-side.
@@ -345,7 +365,7 @@ export default function App() {
       try {
         const response = await fetch(verifyEndpoint, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ productId: selectedRecord.id, brand: selectedRecord.company, serialNumber: serialInput, factory: factoryInput })
+          body: JSON.stringify({ productId: selectedRecord.id, brand: selectedRecord.company, serialNumber: serialInput, factory: factoryInput, factoryNumber: factoryNumberInput, imageOcrText: extractedText })
         });
         if (response.ok) manufacturerResult = await response.json();
       } catch (error) {
@@ -356,8 +376,12 @@ export default function App() {
     const officialVerified = manufacturerResult?.verified === true;
     const officialRejected = manufacturerResult?.verified === false;
     const checks = [
+      { name: '사진 해상도', passed: usableResolution, note: imageInfo.width && imageInfo.height ? `${imageInfo.width}×${imageInfo.height}px${usableResolution ? ' · 세부 확인에 적합한 크기' : ' · 더 선명하고 크게 촬영한 사진 권장'}` : '이미지 크기를 읽지 못함' },
+      { name: '라벨 문자 가독성', passed: readableLabel, note: readableLabel ? '사진에서 비교 가능한 문자를 일부 추출함' : '읽을 수 있는 문자가 적음 · 라벨/시리얼 부분을 가까이 촬영해 주세요' },
+      { name: '브랜드/모델 문자 일치', passed: visibleBrandText, note: visibleBrandText ? 'OCR 문자 중 선택한 상품과 일치하는 브랜드/모델 단서가 있음' : '브랜드/모델 문자가 확인되지 않음 · 사진만으로 불일치를 단정할 수 없음' },
       { name: '사진 속 문자 인식(OCR)', passed: Boolean(extractedText), note: extractedText ? '사진에서 문자를 추출함 · 상품 진위 판정은 아님' : '문자 인식 결과가 없음' },
       { name: '상품번호 대조', passed: productNumberMatch, note: productNumberMatch ? '진가네 예시 등록번호와 일치' : `입력값: ${productNumber || '없음'} / 예시 등록번호: ${selectedRecord.id}` },
+      { name: '공장번호 추출', passed: Boolean(factoryNumberInput), note: factoryNumberInput ? `사진/입력에서 공장번호를 읽음: ${factoryNumberInput} · 등록된 공식 공장번호와 대조 필요` : '공장번호를 찾지 못함 · 라벨의 Factory No./공장번호 부분을 선명하게 촬영해 주세요' },
       { name: '생산 공장 정보 대조', passed: factoryMatch, note: factoryMatch ? '진가네 예시 등록 공장명과 일치' : `입력값: ${factoryInput || '없음'} / 예시 등록 공장: ${selectedRecord.factory}` },
       { name: '일련번호 형식', passed: serialProvided, note: serialProvided ? '일련번호가 입력됨 · 형식 확인만 완료' : '일련번호가 없거나 너무 짧음' },
       { name: '제조사 공식 데이터 조회', passed: officialVerified, note: officialVerified ? '연결된 검증 서버가 확인 응답을 반환함' : officialRejected ? '검증 서버에서 일치하지 않는다고 응답함' : '공식 제조사 DB 연결이 설정되지 않아 확인 불가' }
@@ -372,14 +396,14 @@ export default function App() {
       verdict, score: matchedCount, productName: selectedRecord.name,
       productNumber: productNumber || '입력되지 않음', registeredProductNumber: selectedRecord.id,
       companyName: selectedRecord.company, factoryName: factoryInput || '입력되지 않음',
-      registeredFactory: selectedRecord.factory, serialNumber: serialInput || '입력되지 않음',
+      registeredFactory: selectedRecord.factory, factoryNumber: factoryNumberInput || '사진에서 추출되지 않음', serialNumber: serialInput || '입력되지 않음',
       image: scanPreview, extractedText, databaseStatus: officialVerified ? '공식 검증 서버 확인 응답' : officialRejected ? '공식 검증 서버 불일치 응답' : '미연결',
       serialStatus: officialVerified ? '공식 서버 확인' : '입력만 확인 · 진위 미검증',
       summary: officialVerified
         ? '연결된 제조사 검증 서버가 해당 일련번호를 확인했다고 응답했습니다. 최종 판정 범위는 해당 제조사의 공식 응답 내용과 검증 서버의 신뢰성에 따릅니다.'
-        : '진가네 예시 등록정보와 입력값을 비교했습니다. 상품번호·공장명 일치 또는 OCR 결과만으로 정품이라고 판단할 수 없습니다. 제조사 공식 데이터베이스 연결 및 검증 응답이 없어 정품 여부는 확인되지 않았습니다.',
+        : '사진에서 공장번호와 일련번호를 읽어 확인 항목으로 정리했습니다. 현재 공식 제조사 데이터베이스가 연결되지 않아 번호가 실제 등록 정보와 일치하는지 검증할 수 없습니다. 번호가 읽혔다는 이유만으로 정품/가품을 단정하지 않고 판정 보류로 표시합니다.',
       checks,
-      disclaimer: '현재 상품 카탈로그는 시연용 예시 데이터입니다. OCR은 보이는 글자만 추출하며, 공식 제조사 데이터베이스에 연결되지 않은 상태에서는 진품일 확률을 계산하거나 정품 인증을 보증하지 않습니다.'
+      disclaimer: '공장번호와 일련번호는 OCR로 읽어내는 단계와 제조사의 신뢰할 수 있는 등록 데이터와 대조하는 단계가 다릅니다. 공식 검증 서버가 verified=true/false로 응답한 경우에만 공식 대조 결과로 표시합니다. 서버가 연결되지 않았다면 판정 보류이며, 번호가 사진에 보인다는 사실만으로 정품을 보증하지 않습니다.'
     });
   };
 
@@ -690,7 +714,7 @@ export default function App() {
                   진가네 AI 정품 검증 센터
                 </h2>
                 <p className="text-xs text-slate-600 mt-1">
-                  사진 속 글자를 OCR로 추출하고, 상품번호·공장·일련번호를 등록 정보와 비교합니다. (1회 분석 시 이용권 1개 소모)
+                  사진 해상도·라벨 가독성·브랜드 문자와 상품 등록 정보를 함께 사전 점검합니다. 사진만으로 진품/가품을 확정하지 않으며, (1회 분석 시 이용권 1개 소모)
                 </p>
               </div>
 
@@ -730,7 +754,10 @@ export default function App() {
                       <input value={scanProductNumber} onChange={(e) => setScanProductNumber(e.target.value)} placeholder="상품번호 (예: PROD-101)" className="w-full rounded-lg border border-slate-300 bg-white p-2.5 text-xs" />
                       <input value={scanFactoryInput} onChange={(e) => setScanFactoryInput(e.target.value)} placeholder="생산 공장명" className="w-full rounded-lg border border-slate-300 bg-white p-2.5 text-xs" />
                     </div>
-                    <input value={scanSerialInput} onChange={(e) => setScanSerialInput(e.target.value)} placeholder="제품 일련번호 / 제조번호" className="w-full rounded-lg border border-slate-300 bg-white p-2.5 text-xs" />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <input value={scanFactoryNumber} onChange={(e) => setScanFactoryNumber(e.target.value)} placeholder="공장번호 / Factory No." className="w-full rounded-lg border border-slate-300 bg-white p-2.5 text-xs" />
+                      <input value={scanSerialInput} onChange={(e) => setScanSerialInput(e.target.value)} placeholder="일련번호 / Serial No." className="w-full rounded-lg border border-slate-300 bg-white p-2.5 text-xs" />
+                    </div>
                   </div>
 
                   {/* Drop zone */}
@@ -778,7 +805,7 @@ export default function App() {
                       <span className="text-[10px] text-slate-500">{ocrStatus || '분석 전'}</span>
                     </div>
                     <p className="text-[11px] text-slate-600 whitespace-pre-wrap break-words max-h-24 overflow-auto">{ocrText || '분석을 시작하면 라벨에 보이는 문자·숫자를 추출합니다.'}</p>
-                    <p className="text-[10px] text-amber-800">OCR은 문자 추출 기능이며 제품의 진품 여부를 판별하지 않습니다.</p>
+                    <p className="text-[10px] text-amber-800">이미지 사전 점검은 의심 단서를 찾는 보조 기능입니다. 가품도 외형을 복제할 수 있어 최종 판정은 제조사 공식 시리얼 조회 또는 전문 감정이 필요합니다.</p>
                   </div>
 
                   {/* Scan Trigger Button */}
@@ -855,6 +882,7 @@ export default function App() {
                         <div><span className="text-slate-500 block mb-0.5">제조사 / 브랜드</span><span className="font-bold text-slate-900">{scanResult.companyName}</span></div>
                         <div><span className="text-slate-500 block mb-0.5">입력 상품번호</span><span className="font-mono font-bold text-blue-900">{scanResult.productNumber}</span></div>
                         <div><span className="text-slate-500 block mb-0.5">입력 생산 공장</span><span className="font-bold text-blue-900">{scanResult.factoryName}</span></div>
+                        <div><span className="text-slate-500 block mb-0.5">추출 공장번호</span><span className="font-mono font-bold text-slate-900">{scanResult.factoryNumber || '추출되지 않음'}</span></div>
                         <div className="sm:col-span-2"><span className="text-slate-500 block mb-0.5">제품 일련번호</span><span className="font-mono font-bold text-slate-800">{scanResult.serialNumber}</span></div>
                         <div><span className="text-slate-500 block mb-0.5">제조사 DB 조회</span><span className="font-bold text-slate-900">{scanResult.databaseStatus || '미연결'}</span></div>
                         <div><span className="text-slate-500 block mb-0.5">일련번호 검증</span><span className="font-bold text-slate-900">{scanResult.serialStatus || '확인 불가'}</span></div>

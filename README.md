@@ -43,3 +43,9 @@ GitHub에 이 폴더의 파일 전체를 올린 뒤 Vercel에서 해당 저장�
 4. **Deploy**를 누릅니다.
 
 `/api/verify-manufacturer`는 외부 제조사 검증 API가 설정되기 전에는 실제 정품 검증을 하지 않는 서버 함수 뼈대입니다. 실제 연결 시 Vercel 환경 변수 `MANUFACTURER_API_URL`, `MANUFACTURER_API_KEY`를 설정해야 합니다. 현재 화면의 상품/인증 정보는 시연용 데이터입니다.
+
+
+## 공장번호·일련번호 이미지 점검
+검증 화면은 OCR로 라벨의 공장번호(Factory/Plant No.)와 일련번호(Serial/SN)를 읽어 결과에 표시합니다. 공식 제조사 검증 API가 설정되어 있으면 해당 번호를 서버로 전달해 대조 응답을 확인합니다. 공식 API가 설정되지 않은 경우에는 번호를 추출해도 진품/가품 확정 판정을 하지 않고 추가 확인 필요로 표시합니다.
+
+Vercel 환경 변수 `MANUFACTURER_API_URL`, `MANUFACTURER_API_KEY`에는 제조사 또는 신뢰할 수 있는 인증 제공자의 실제 검증 API 정보를 설정해야 합니다. API는 `{ "verified": true }` 또는 `{ "verified": false }` 형태로 공식 대조 결과를 반환해야 합니다. 임의의 예시 데이터만으로 진위 판정을 하지 마세요.
