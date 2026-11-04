@@ -424,7 +424,7 @@ export default function App() {
         <div className="container mx-auto flex justify-between items-center">
           <span className="flex items-center gap-2 text-xs md:text-sm">
             <span className="w-2.5 h-2.5 rounded-full bg-blue-900 animate-pulse"></span>
-            진가네 — EBS 스타일 공식 지정 품질 인증 쇼핑몰 & AI 정품 감정 센터
+            진가네 — 공식 지정 품질 인증 쇼핑몰 & AI 정품 감정 센터
           </span>
           <div className="flex items-center gap-3">
             <span className="hidden md:inline text-blue-900 text-xs">
